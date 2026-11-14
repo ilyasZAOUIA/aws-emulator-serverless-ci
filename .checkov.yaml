@@ -1,0 +1,20 @@
+# Checkov (IaC security scan) — accepted risks for this demo project.
+# Each skip is a conscious decision, not a silenced warning.
+framework:
+  - terraform
+skip-check:
+  - CKV_AWS_119   # DynamoDB CMK: AWS-owned key encryption is enabled; a CMK costs $1/month
+  - CKV_AWS_158   # Log group KMS: same reason, AWS-managed encryption is enough here
+  - CKV_AWS_338   # 1-year log retention: 14 days fits a demo, raise it for production
+  - CKV_AWS_116   # Lambda DLQ: invocations are synchronous (API Gateway), a DLQ never fires
+  - CKV_AWS_117   # Lambda in VPC: it only calls DynamoDB, a VPC adds NAT cost and no isolation gain
+  - CKV_AWS_115   # Reserved concurrency: new AWS accounts reject it below the 10-unit floor
+  - CKV_AWS_272   # Code signing: needs AWS Signer profiles, out of scope
+  - CKV_AWS_173   # Env var KMS: variables hold a table name, no secrets
+  - CKV_AWS_59    # Open API: a public URL shortener is public by design
+  - CKV_AWS_76    # Access logs: needs an account-level CloudWatch role, out of scope
+  - CKV_AWS_120   # Caching: redirects must count hits, caching would skip the Lambda
+  - CKV2_AWS_4    # Stage logging level: same account-level role as CKV_AWS_76
+  - CKV2_AWS_51   # Client certificates: clients are browsers, mTLS does not apply
+  - CKV2_AWS_53   # Request validation: the Lambda validates the payload (unit-tested)
+  - CKV2_AWS_29   # WAF: ~$5/month minimum, listed as a production next step

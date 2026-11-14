@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Fast feedback: no AWS, no emulator.
+  # ------------------------------------------------------------------------
+  static-checks:
+    name: Lint, unit tests & security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Unit tests (Lambda)
+        working-directory: app
+        run: |
+          npm ci
+          npm test
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra
+
+      - name: terraform validate
+        working-directory: infra
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Checkov (IaC security scan)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra
+          config_file: .checkov.yaml
+          quiet: true
+
+  # ------------------------------------------------------------------------
+  # Real deployment + end-to-end tests against AWS Emulator.
+  # Ephemeral environment: created and destroyed in every run.
+  # ------------------------------------------------------------------------
+  integration:
+    name: Deploy & test on AWS Emulator
+    needs: static-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start AWS Emulator
+        env:
+          EMULATOR_LOG: ${{ runner.temp }}/aws-emulator.log
+        run: bash scripts/start-emulator.sh
+
+      - name: Smoke test (who am I?)
+        run: aws sts get-caller-identity
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: terraform init
+        working-directory: infra
+        run: terraform init
+
+      - name: terraform plan
+        working-directory: infra
+        run: |
+          terraform plan -out=tfplan
+          {
+            echo '### Terraform plan'
+            echo '```'
+            terraform show -no-color tfplan | tail -n 60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform apply
+        working-directory: infra
+        run: terraform apply tfplan
+
+      # A second plan right after apply must be empty (exit code 2 = drift).
+      - name: Idempotency check
+        working-directory: infra
+        run: terraform plan -detailed-exitcode
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: End-to-end tests
+        run: |
+          pip install -q -r tests/requirements.txt
+          pytest tests/integration -v
+
+      - name: terraform destroy
+        if: always()
+        working-directory: infra
+        run: terraform destroy -auto-approve
+
+      - name: Upload emulator log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: aws-emulator-log
+          path: ${{ runner.temp }}/aws-emulator.log
+          if-no-files-found: ignore
