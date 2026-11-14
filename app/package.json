@@ -1,0 +1,16 @@
+{
+  "name": "url-shortener-lambda",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "URL shortener Lambda handler (API Gateway -> Lambda -> DynamoDB)",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

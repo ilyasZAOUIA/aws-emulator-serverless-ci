@@ -1,0 +1,11 @@
+node_modules/
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+tfplan
+infra/build/
+.emulator.env
+__pycache__/
+.pytest_cache/
+docs/screenshots/*.tmp
