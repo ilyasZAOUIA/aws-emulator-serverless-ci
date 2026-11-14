@@ -29,6 +29,13 @@ resource "aws_dynamodb_table" "links" {
   server_side_encryption {
     enabled = true
   }
+
+  # AWS Emulator reports on_demand_throughput = -1 ("no limit") for on-demand
+  # tables; the provider reads it as drift on every plan. It is not managed
+  # here, so ignore it to keep the idempotency check meaningful.
+  lifecycle {
+    ignore_changes = [on_demand_throughput]
+  }
 }
 
 # --------------------------------------------------------------------- IAM --
