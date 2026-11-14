@@ -66,6 +66,45 @@ flowchart LR
 | **E2E tests** | HTTP → API Gateway → Lambda → DynamoDB works, data is persisted, errors map to the right status codes |
 | **destroy** | The environment is ephemeral and cleans up after itself, even when tests fail |
 
+## Screenshots
+
+**Green pipeline on GitHub Actions**: static checks, then deploy & test on AWS Emulator.
+
+![GitHub Actions run](docs/screenshots/09-github-actions-run.png)
+
+**`terraform apply`**: 16 resources across 5 services, created on the emulator.
+
+![terraform apply](docs/screenshots/04-terraform-apply.png)
+
+**End-to-end tests**: real HTTP requests through API Gateway → Lambda → DynamoDB.
+
+![pytest e2e](docs/screenshots/06-e2e-tests.png)
+
+**Manual demo**: create a short link (`201`), then follow it (`301` + `Location`).
+
+![curl demo](docs/screenshots/07-demo-curl.png)
+
+**Idempotency**: a second plan right after apply finds no changes (exit code 0).
+
+![idempotency](docs/screenshots/05-idempotency.png)
+
+**Checkov**: 0 failed checks; accepted risks are documented in `.checkov.yaml`.
+
+![checkov](docs/screenshots/02-checkov.png)
+
+<details>
+<summary>More screenshots</summary>
+
+Unit tests, emulator health and identity, CI plan, destroy, repository home.
+
+![unit tests](docs/screenshots/01-unit-tests.png)
+![emulator](docs/screenshots/03-emulator.png)
+![CI terraform plan](docs/screenshots/10-ci-terraform-plan.png)
+![terraform destroy](docs/screenshots/08-terraform-destroy.png)
+![repo home](docs/screenshots/11-repo-home.png)
+
+</details>
+
 ## Project layout
 
 ```
