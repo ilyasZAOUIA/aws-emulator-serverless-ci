@@ -34,18 +34,33 @@ if [ "$VERSION" != "$TESTED_VERSION" ]; then
   fi
 fi
 
-echo "==> Starting AWS Emulator on port $PORT (log: $LOG_FILE)"
-# --idle-timeout: stop by itself if a CI job dies halfway.
-nohup aws-emulator -p "$PORT" --telemetry off --idle-timeout 1800 >"$LOG_FILE" 2>&1 &
+healthy() {
+  [ -f "$EMU_DIR/ca.pem" ] &&
+    curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null
+}
 
-for _ in $(seq 60); do
-  if [ -f "$EMU_DIR/ca.pem" ] &&
-    curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null; then
-    echo "==> Emulator is healthy"
-    break
-  fi
-  sleep 1
-done
+if healthy; then
+  # A second instance would overwrite the log of the first one, and the
+  # health check would still pass against the first one.
+  echo "==> AWS Emulator is already running on port $PORT, reusing it"
+elif pgrep -a -x aws-emulator | grep -qE -- "-p $PORT( |$)"; then
+  # Match the process name, not any command line that mentions it.
+  echo "An aws-emulator process is running on port $PORT but is not healthy." >&2
+  echo "Stop it first: make clean" >&2
+  exit 1
+else
+  echo "==> Starting AWS Emulator on port $PORT (log: $LOG_FILE)"
+  # --idle-timeout: stop by itself if a CI job dies halfway.
+  nohup aws-emulator -p "$PORT" --telemetry off --idle-timeout 1800 >"$LOG_FILE" 2>&1 &
+
+  for _ in $(seq 60); do
+    if healthy; then
+      echo "==> Emulator is healthy"
+      break
+    fi
+    sleep 1
+  done
+fi
 curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null || {
   echo "Emulator did not become healthy in 60s" >&2
   cat "$LOG_FILE" >&2
