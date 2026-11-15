@@ -1,6 +1,6 @@
 // URL shortener Lambda (API Gateway REST proxy integration).
 //   POST /links          {"url": "https://..."}  -> 201 {"code": "...", "url": "..."}
-//   GET  /links/{code}                           -> 301 redirect (+ hit counter)
+//   GET  /links/{code}                           -> 302 redirect (+ hit counter)
 //
 // The AWS SDK v3 ships with the nodejs22.x runtime, so nothing is bundled.
 import {
@@ -97,7 +97,12 @@ export function createHandler({ client, tableName }) {
       );
       const url = out.Attributes.url.S;
       const hits = Number(out.Attributes.hits.N);
-      return response(301, { code, url, hits }, { Location: url });
+      // 302, not 301: browsers cache a 301 permanently and stop calling the
+      // API, so later visits would never reach the hit counter.
+      return response(302, { code, url, hits }, {
+        Location: url,
+        "Cache-Control": "no-store",
+      });
     } catch (err) {
       if (err.name === "ConditionalCheckFailedException") {
         return response(404, { error: `unknown code '${code}'` });

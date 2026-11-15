@@ -25,8 +25,9 @@ def test_redirect_and_hit_counter(api):
     first = api.request("GET", f"/links/{code}")
     second = api.request("GET", f"/links/{code}")
 
-    assert first.status_code == 301, first.text
+    assert first.status_code == 302, first.text
     assert first.headers["Location"] == TARGET
+    assert first.headers["Cache-Control"] == "no-store"
     assert first.json()["hits"] == 1
     assert second.json()["hits"] == 2
 
