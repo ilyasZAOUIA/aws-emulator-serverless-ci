@@ -1,0 +1,23 @@
+# Weekly update PRs. Each one runs the CI, including the deploy and
+# end-to-end tests on AWS Emulator.
+version: 2
+updates:
+  - package-ecosystem: github-actions # SHA-pinned actions in ci.yml
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm # AWS SDK used by the Lambda unit tests
+    directory: /app
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip # end-to-end test dependencies
+    directory: /tests
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: terraform # providers in .terraform.lock.hcl
+    directory: /infra
+    schedule:
+      interval: weekly

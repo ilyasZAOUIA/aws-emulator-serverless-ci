@@ -5,7 +5,10 @@
 set -euo pipefail
 
 PORT="${EMULATOR_PORT:-9297}"
+# Only the latest LTS build is published at a stable URL, so the version
+# cannot be pinned at download time. It is checked after install instead.
 DEB_URL="https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS/latest/aws-emulator_amd64.deb"
+TESTED_VERSION="1.0.385" # last version this project was tested against
 EMU_DIR="$HOME/.aws/emulator/$PORT"
 LOG_FILE="${EMULATOR_LOG:-/tmp/aws-emulator.log}"
 ENV_FILE="${ENV_FILE:-.emulator.env}"
@@ -15,7 +18,21 @@ if ! command -v aws-emulator >/dev/null 2>&1; then
   curl -fsSLo /tmp/aws-emulator.deb "$DEB_URL"
   sudo apt-get install -y -qq /tmp/aws-emulator.deb >/dev/null
 fi
-echo "==> $(aws-emulator -v)"
+
+VERSION="$(aws-emulator -v | sed -n 's/^Version: *//p')"
+if [ -z "$VERSION" ]; then
+  echo "Could not read the AWS Emulator version from 'aws-emulator -v'" >&2
+  exit 1
+fi
+echo "==> AWS Emulator $VERSION"
+if [ "$VERSION" != "$TESTED_VERSION" ]; then
+  msg="AWS Emulator $VERSION differs from the tested version $TESTED_VERSION"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::warning title=AWS Emulator version::$msg"
+  else
+    echo "WARNING: $msg" >&2
+  fi
+fi
 
 echo "==> Starting AWS Emulator on port $PORT (log: $LOG_FILE)"
 # --idle-timeout: stop by itself if a CI job dies halfway.
