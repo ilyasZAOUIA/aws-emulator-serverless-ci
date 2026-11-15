@@ -5,7 +5,10 @@
 set -euo pipefail
 
 PORT="${EMULATOR_PORT:-9297}"
+# Only the latest LTS build is published at a stable URL, so the version
+# cannot be pinned at download time. It is checked after install instead.
 DEB_URL="https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS/latest/aws-emulator_amd64.deb"
+TESTED_VERSION="1.0.385" # last version this project was tested against
 EMU_DIR="$HOME/.aws/emulator/$PORT"
 LOG_FILE="${EMULATOR_LOG:-/tmp/aws-emulator.log}"
 ENV_FILE="${ENV_FILE:-.emulator.env}"
@@ -15,20 +18,49 @@ if ! command -v aws-emulator >/dev/null 2>&1; then
   curl -fsSLo /tmp/aws-emulator.deb "$DEB_URL"
   sudo apt-get install -y -qq /tmp/aws-emulator.deb >/dev/null
 fi
-echo "==> $(aws-emulator -v)"
 
-echo "==> Starting AWS Emulator on port $PORT (log: $LOG_FILE)"
-# --idle-timeout: stop by itself if a CI job dies halfway.
-nohup aws-emulator -p "$PORT" --telemetry off --idle-timeout 1800 >"$LOG_FILE" 2>&1 &
-
-for _ in $(seq 60); do
-  if [ -f "$EMU_DIR/ca.pem" ] &&
-    curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null; then
-    echo "==> Emulator is healthy"
-    break
+VERSION="$(aws-emulator -v | sed -n 's/^Version: *//p')"
+if [ -z "$VERSION" ]; then
+  echo "Could not read the AWS Emulator version from 'aws-emulator -v'" >&2
+  exit 1
+fi
+echo "==> AWS Emulator $VERSION"
+if [ "$VERSION" != "$TESTED_VERSION" ]; then
+  msg="AWS Emulator $VERSION differs from the tested version $TESTED_VERSION"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::warning title=AWS Emulator version::$msg"
+  else
+    echo "WARNING: $msg" >&2
   fi
-  sleep 1
-done
+fi
+
+healthy() {
+  [ -f "$EMU_DIR/ca.pem" ] &&
+    curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null
+}
+
+if healthy; then
+  # A second instance would overwrite the log of the first one, and the
+  # health check would still pass against the first one.
+  echo "==> AWS Emulator is already running on port $PORT, reusing it"
+elif pgrep -a -x aws-emulator | grep -qE -- "-p $PORT( |$)"; then
+  # Match the process name, not any command line that mentions it.
+  echo "An aws-emulator process is running on port $PORT but is not healthy." >&2
+  echo "Stop it first: make clean" >&2
+  exit 1
+else
+  echo "==> Starting AWS Emulator on port $PORT (log: $LOG_FILE)"
+  # --idle-timeout: stop by itself if a CI job dies halfway.
+  nohup aws-emulator -p "$PORT" --telemetry off --idle-timeout 1800 >"$LOG_FILE" 2>&1 &
+
+  for _ in $(seq 60); do
+    if healthy; then
+      echo "==> Emulator is healthy"
+      break
+    fi
+    sleep 1
+  done
+fi
 curl -sf --cacert "$EMU_DIR/ca.pem" "https://127.0.0.1:$PORT/__admin/health" >/dev/null || {
   echo "Emulator did not become healthy in 60s" >&2
   cat "$LOG_FILE" >&2

@@ -65,6 +65,17 @@ test("POST /links rejects malformed JSON with 400", async () => {
   assert.equal(res.statusCode, 400);
 });
 
+test("POST /links rejects JSON bodies that are not objects with 400", async () => {
+  const client = fakeClient(() => ({}));
+  const handler = createHandler({ client, tableName: "t" });
+  for (const body of ["null", '"https://example.com"', "42", '["https://example.com"]']) {
+    const res = await handler({ httpMethod: "POST", body });
+    assert.equal(res.statusCode, 400, `body ${body}`);
+    assert.equal(JSON.parse(res.body).error, "body must be a JSON object");
+  }
+  assert.equal(client.calls.length, 0);
+});
+
 test("POST /links decodes base64 bodies", async () => {
   const handler = createHandler({ client: fakeClient(() => ({})), tableName: "t" });
   const res = await handler({
@@ -86,7 +97,7 @@ test("POST /links retries on code collision", async () => {
   assert.equal(client.calls.length, 2);
 });
 
-test("GET /links/{code} redirects with 301 and returns hits", async () => {
+test("GET /links/{code} redirects with an uncached 302 and returns hits", async () => {
   const client = fakeClient(() => ({
     Attributes: { url: { S: "https://example.com" }, hits: { N: "3" } },
   }));
@@ -94,8 +105,9 @@ test("GET /links/{code} redirects with 301 and returns hits", async () => {
 
   const res = await handler({ httpMethod: "GET", pathParameters: { code: "abc1234" } });
 
-  assert.equal(res.statusCode, 301);
+  assert.equal(res.statusCode, 302);
   assert.equal(res.headers.Location, "https://example.com");
+  assert.equal(res.headers["Cache-Control"], "no-store");
   assert.equal(JSON.parse(res.body).hits, 3);
 });
 

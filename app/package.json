@@ -5,6 +5,7 @@
   "type": "module",
   "description": "URL shortener Lambda handler (API Gateway -> Lambda -> DynamoDB)",
   "scripts": {
+    "lint": "node --check src/index.mjs && node --check test/index.test.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
