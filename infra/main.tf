@@ -55,23 +55,35 @@ resource "aws_iam_role" "lambda" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-# Least privilege: only the three DynamoDB actions the code uses, on one table.
-data "aws_iam_policy_document" "lambda_dynamodb" {
+# Only what the function does at runtime. AWS Emulator does not enforce IAM,
+# so this policy is reviewed statically, not tested.
+data "aws_iam_policy_document" "lambda" {
+  # The handler calls PutItem (create) and UpdateItem (resolve + hit counter).
   statement {
-    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
+    sid       = "LinksTable"
+    actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
     resources = [aws_dynamodb_table.links.arn]
+  }
+
+  # The log group is created by Terraform, so logs:CreateLogGroup is not needed.
+  statement {
+    sid       = "FunctionLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.lambda.arn}:log-stream:*"]
+  }
+
+  # Required by tracing_config Active. These X-Ray actions only support "*".
+  statement {
+    sid       = "XRayTraces"
+    actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+    resources = ["*"]
   }
 }
 
-resource "aws_iam_role_policy" "lambda_dynamodb" {
-  name   = "dynamodb-links"
+resource "aws_iam_role_policy" "lambda" {
+  name   = "${var.project}-lambda"
   role   = aws_iam_role.lambda.id
-  policy = data.aws_iam_policy_document.lambda_dynamodb.json
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_logs" {
-  role       = aws_iam_role.lambda.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  policy = data.aws_iam_policy_document.lambda.json
 }
 
 # ------------------------------------------------------------------ Lambda --
@@ -105,7 +117,7 @@ resource "aws_lambda_function" "api" {
     variables = merge({ TABLE_NAME = aws_dynamodb_table.links.name }, local.emulator_env)
   }
 
-  depends_on = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy_attachment.lambda_logs]
+  depends_on = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.lambda]
 }
 
 # ------------------------------------------------------------- API Gateway --
