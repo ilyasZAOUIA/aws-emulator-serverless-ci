@@ -1,229 +1,213 @@
-# Serverless URL shortener, tested end-to-end on AWS Emulator
+# Serverless URL shortener tested on AWS Emulator
 
-[![CI](https://github.com/ilyasZAOUIA/aws-emulator-serverless-ci/actions/workflows/ci.yml/badge.svg)](https://github.com/ilyasZAOUIA/aws-emulator-serverless-ci/actions/workflows/ci.yml)
+## Project overview
 
-A URL shortener built on API Gateway, Lambda (Node.js 22) and DynamoDB, defined
-with Terraform. On every push, GitHub Actions starts
-[AWS Emulator](https://github.com/aws/aws-emulator) on the runner, deploys the
-stack to it, checks that a second `terraform plan` is empty, sends real HTTP
-requests through the API, then destroys everything.
+This is a small URL shortener built on API Gateway, Lambda and DynamoDB and
+defined with Terraform. You send it a URL, it returns a 7-character code, and
+requesting that code redirects you to the URL while counting the visit.
 
-The pipeline needs no AWS account and no cloud credentials. The project has
-**not** been deployed to a real AWS account (see [Limitations](#limitations)).
+The application itself is simple on purpose. The point of the project is the
+pipeline around it: on every push, GitHub Actions deploys the whole stack to
+[AWS Emulator](https://github.com/aws/aws-emulator) running on the CI runner,
+checks that Terraform is idempotent, sends real HTTP requests through the API,
+and destroys everything at the end.
 
-## Why
+I used AWS Emulator because I wanted to test a serverless architecture end to
+end without an AWS account or cloud credentials in CI. Mocks only test the
+handler logic, and a real account costs money and needs credentials. The
+emulator sits in between: the Terraform code and the AWS SDK calls are the
+same, only environment variables point them at a local endpoint. Part of the
+work was finding out what that actually validates, and what it does not.
 
-Infrastructure code is usually tested in one of two ways: with mocks, which are
-fast but say little about the deployed stack, or in a real AWS account, which
-is realistic but costs money and requires giving credentials to CI. This
-project uses a local emulator in between: the Terraform code and the AWS SDK
-calls are the same, and only environment variables point them at the emulator.
-The goal is to see how much of a serverless stack that approach can actually
-check, and where it stops.
+The project has not been deployed to a real AWS account.
 
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph runner["GitHub Actions runner (ubuntu-latest)"]
-        direction LR
-        T[pytest] -- "HTTPS + Host header" --> E
-        TF[terraform apply] -- "AWS APIs" --> E
-        subgraph E["AWS Emulator :9297"]
-            direction LR
-            APIGW[API Gateway<br/>REST, stage v1] --> L[Lambda<br/>Node.js 22] --> D[(DynamoDB<br/>links table)]
-        end
-    end
-```
-
-| Endpoint | Behaviour |
-| --- | --- |
-| `POST /links` `{"url": "https://..."}` | `201` with a 7-character code; `400` if the body is not a JSON object with an http(s) URL |
-| `GET /links/{code}` | `302` redirect with `Cache-Control: no-store`, increments a hit counter; `404` for an unknown code |
-
-Main components ([`infra/main.tf`](infra/main.tf), 15 resources):
-
-- **DynamoDB:** an on-demand `links` table with encryption and point-in-time
-  recovery. Codes are created with a conditional write, so a collision cannot
-  overwrite an existing link. Hits are counted with an atomic `ADD`.
-- **Lambda:** the handler in [`app/src/index.mjs`](app/src/index.mjs), with
-  X-Ray active tracing and a log group created by Terraform.
-- **IAM:** an execution role with one inline policy limited to what the function
-  does: `PutItem` and `UpdateItem` on the table, writing to its own log streams,
-  and sending X-Ray traces.
-- **API Gateway:** a REST API with two routes, a Lambda proxy integration,
-  a deployment and a `v1` stage with X-Ray tracing.
-
-## Pipeline
-
-One workflow, [`ci.yml`](.github/workflows/ci.yml), with two jobs. It runs on
-pushes to `main`, on pull requests and on manual trigger.
+## Architecture and technologies
 
 ```mermaid
 flowchart LR
-    trigger(["push to main<br/>pull request<br/>manual run"]) --> J1
-
-    subgraph J1["Job 1: Lint, unit tests & security scan"]
-        direction TB
-        a1["JavaScript syntax check"] --> a2["Unit tests<br/>node --test"] --> a3["Ruff<br/>Python tests"] --> a4["terraform fmt + validate"] --> a5["Checkov scan"]
-    end
-
-    J1 -- "needs" --> J2
-
-    subgraph J2["Job 2: Deploy & test on AWS Emulator"]
-        direction TB
-        b1["Start emulator<br/>+ STS smoke test"] --> b2["terraform plan + apply"] --> b3["Idempotency check<br/>plan -detailed-exitcode"] --> b4["End-to-end tests<br/>pytest"] --> b5["terraform destroy<br/>(always runs)"]
-    end
+    client[Client] -- "POST /links<br/>GET /links/{code}" --> apigw[API Gateway<br/>REST API, stage v1]
+    apigw -- "proxy integration" --> lambda[Lambda<br/>Node.js 22]
+    lambda -- "PutItem / UpdateItem" --> ddb[(DynamoDB<br/>links table)]
 ```
 
-Job 1 needs no infrastructure and fails fast. Job 2 only starts if job 1
-passed. `terraform destroy` and the upload of the emulator log run even when
-a previous step failed, so every run cleans up after itself.
+- `POST /links` with `{"url": "https://..."}` goes through API Gateway to the
+  Lambda function, which validates the body, generates a code and stores it
+  with a conditional `PutItem` (`attribute_not_exists(code)`), so a collision
+  never overwrites an existing link. It returns `201`, or `400` if the body is
+  not a JSON object with an http(s) URL.
+- `GET /links/{code}` runs an `UpdateItem` that increments the hit counter
+  atomically and returns the stored URL. The function answers with a `302`
+  redirect and `Cache-Control: no-store`, or `404` if the code does not exist.
 
-Results of every run are public in the
-[Actions tab](https://github.com/ilyasZAOUIA/aws-emulator-serverless-ci/actions/workflows/ci.yml).
+Terraform ([`infra/`](infra)) defines the 15 resources: the DynamoDB table,
+the Lambda function and its log group, an IAM role with one inline policy
+(`PutItem` and `UpdateItem` on the table, log streams of the function's log
+group, X-Ray traces), and the API Gateway REST API with its routes,
+integrations, deployment and stage.
 
-## Testing strategy
+The provider block has no endpoint. `scripts/start-emulator.sh` installs and
+starts AWS Emulator, then writes `AWS_ENDPOINT_URL`, the emulator's
+credentials and config files, its CA bundle, the region and a few SDK
+settings to `.emulator.env` (and to `$GITHUB_ENV` in CI). With those variables
+loaded, `terraform apply` talks to the emulator. On the emulator, all APIs
+share one endpoint, so the tests reach the API with a
+`Host: <api_id>.execute-api.us-east-1.amazonaws.com` header and the stage name
+at the start of the path.
 
-| Layer | What it checks | Where |
+**Technologies:** Node.js 22 and the AWS SDK for JavaScript v3, Terraform
+1.17.2 (AWS provider 6.73.0), AWS Emulator 1.0.385, GitHub Actions,
+`node:test`, pytest with requests and boto3, Checkov, Ruff, Make.
+
+## CI/CD pipeline
+
+The workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on
+pushes to `main`, on pull requests and on manual trigger. It has two jobs.
+
+**Job 1, "Lint, unit tests & security scan"**, needs no infrastructure, so it
+fails fast on simple mistakes: JavaScript syntax check, unit tests, Ruff on the
+Python tests, `terraform fmt -check`, `terraform validate`, and a Checkov scan
+of the Terraform code. Checkov findings were either fixed (X-Ray tracing,
+point-in-time recovery, encryption, scoped IAM) or accepted with a written
+reason in [`.checkov.yaml`](.checkov.yaml).
+
+**Job 2, "Deploy & test on AWS Emulator"**, only runs if job 1 passed:
+
+1. Starts the emulator and runs `aws sts get-caller-identity` as a smoke test.
+2. Runs `terraform plan` (written to the job summary) and `terraform apply`.
+3. Runs `terraform plan -detailed-exitcode` again. Exit code 2 means the plan is
+   not empty right after an apply, so the job fails if anything drifts.
+4. Runs the end-to-end tests against the deployed API.
+5. Runs `terraform destroy` and uploads the emulator log, both with
+   `if: always()`, so a failed run still cleans up and leaves a log to read.
+
+Terraform, the providers (through
+[`infra/.terraform.lock.hcl`](infra/.terraform.lock.hcl)) and the GitHub Actions
+(by commit SHA) are pinned, and [`.github/dependabot.yml`](.github/dependabot.yml)
+is set up for weekly update PRs (Dependabot only reads it from `main`). The
+emulator is the exception: only the latest LTS build has a stable download
+URL, so the start script prints the installed version and warns if it is not
+the one I tested (1.0.385).
+
+## Testing and results
+
+| Check | Count / result | Where it runs |
 | --- | --- | --- |
-| Unit tests (12) | Handler logic with a fake DynamoDB client: validation, status codes, base64 bodies, collision retry, error handling | [`app/test`](app/test) |
-| Lint | JavaScript syntax (`node --check`), Ruff on the Python tests | Job 1 |
-| Static IaC checks | `terraform fmt`, `terraform validate`, Checkov security scan | Job 1 |
-| Idempotency | A plan run right after apply must be empty | Job 2 |
-| End-to-end tests (6) | HTTP requests through API Gateway, Lambda and DynamoDB, including one that reads the item back from DynamoDB | [`tests/integration`](tests/integration) |
+| Unit tests ([`app/test`](app/test)) | 12 tests, handler with a fake DynamoDB client | CI job 1 and locally |
+| End-to-end tests ([`tests/integration`](tests/integration)) | 6 tests through API Gateway, Lambda and DynamoDB | CI job 2 and locally |
+| `terraform fmt` / `validate` | Formatted, valid | CI job 1 and locally |
+| Checkov | 0 failed checks | CI job 1 and locally |
+| `node --check` and Ruff | No errors | CI job 1 and locally |
+| Idempotency | No changes after apply | CI job 2 and locally |
 
-Checkov findings were either fixed (X-Ray, point-in-time recovery, encryption,
-scoped IAM) or accepted with a written reason in [`.checkov.yaml`](.checkov.yaml).
+The unit tests cover input validation, status codes, base64-encoded bodies,
+the retry on a code collision and error handling. The end-to-end tests create
+links, follow them, check the `302`, the `Cache-Control` header and the hit
+counter, read an item back from DynamoDB with boto3, and check the `400` and
+`404` cases.
 
-### What the emulator validates, and what it does not
+**In CI**, every run is listed in the
+[Actions tab](https://github.com/ilyasZAOUIA/aws-emulator-serverless-ci/actions/workflows/ci.yml).
+GitHub only shows the logs and the job summary (with the Terraform plan) to
+signed-in users.
 
-Tested with AWS Emulator 1.0.385; details and commands in
+**Locally**, I ran the same checks with the Makefile on Ubuntu 22.04 with
+Terraform 1.17.2 and AWS Emulator 1.0.385. I also ran manual experiments on the
+emulator (removing IAM permissions, configuring throttling) that are not part
+of the pipeline; they are written up with their commands in
 [`docs/emulator-findings.md`](docs/emulator-findings.md).
 
-| Validated by the pipeline | Not validated |
-| --- | --- |
-| Terraform creates and destroys all 15 resources | Deployment to a real AWS account |
-| A second plan after apply is empty | How AWS evaluates the IAM policy |
-| API Gateway routes requests to the function | Logs permissions (the emulator does not deliver Lambda logs to CloudWatch Logs) |
-| The function writes to and updates DynamoDB **with its execution role**: removing `PutItem` or `UpdateItem` from the policy makes the end-to-end tests fail | X-Ray permissions (traces are recorded without checking them) |
-| Status codes and headers returned to the client | API throttling (stored by the emulator, not enforced) |
+## Local setup and execution
 
-## Running it locally
+Prerequisites, on Ubuntu or Debian:
 
-Tested on Ubuntu 22.04. Requirements: Node.js 22, Terraform (CI uses 1.17.2),
-Python 3 with the `venv` module, and `curl`. The AWS CLI is only needed for
-manual checks.
+- Node.js 22 with npm
+- Terraform: `infra/versions.tf` allows 1.6 or later; I tested with 1.17.2,
+  the version CI uses
+- Python 3 with the `venv` module
+- `curl`, and `sudo` for the first emulator install
+- The AWS CLI, only for manual checks
+
+Typical run:
 
 ```bash
-make emulator   # install AWS Emulator if needed (uses sudo apt-get), start it, write .emulator.env
-make lint       # node --check + Ruff (Python tools go to .venv)
+make emulator   # install AWS Emulator if needed, start it, write .emulator.env
+make lint       # node --check and Ruff
 make unit       # unit tests
-make deploy     # terraform init + apply against the emulator
+make deploy     # terraform init and apply against the emulator
 make e2e        # end-to-end tests
-make destroy
-make clean      # stop the emulator, remove local state and build files
+make destroy    # terraform destroy
+make clean      # stop the emulator, remove local Terraform state and build files
 ```
 
-`make test` runs the unit and end-to-end tests. `make emulator` reuses an
-emulator that is already running on the port instead of starting a second one.
+`make test` runs the unit and end-to-end tests together. `make lint` and
+`make e2e` create a `.venv` for the Python tools on first use. If the emulator
+is already running, `make emulator` reuses it instead of starting a second one.
 
-The emulator is installed from the **LTS** channel. Only the latest LTS build
-has a stable download URL, so the script cannot pin a version; it prints the
-installed version and warns if it differs from the tested one (1.0.385).
-Without sudo, the `.deb` can be extracted with `dpkg-deb -x` and the binary
-put on the `PATH`.
+The emulator is installed from its `.deb` package with `sudo apt-get`. Without
+sudo, the package can be extracted with `dpkg-deb -x` and the `aws-emulator`
+binary put on the `PATH`; the script then skips the install.
 
 To check idempotency by hand after `make deploy`:
 
 ```bash
 set -a; . ./.emulator.env; set +a
-terraform -chdir=infra plan -detailed-exitcode   # exit code 0 means no changes
+terraform -chdir=infra plan -detailed-exitcode   # exit code 0: no changes
 ```
 
-A [dev container](.devcontainer/devcontainer.json) for GitHub Codespaces is
-included, but it **has not been tested**: building it locally failed several
-times because of network issues on the test machine, so it is unknown whether
-it works.
+A [dev container](.devcontainer/devcontainer.json) is included, but I have not
+been able to test it: the local builds failed because of network problems on
+my machine, so I do not know yet whether it works.
 
-## How emulator mode works
+## Challenges and limitations
 
-The Terraform provider has no hard-coded endpoint. `scripts/start-emulator.sh`
-writes these variables to `.emulator.env` (and to `$GITHUB_ENV` in CI):
+Issues I ran into:
 
-```bash
-AWS_ENDPOINT_URL=https://127.0.0.1:9297
-AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/emulator/9297/emulator_credentials
-AWS_CONFIG_FILE=$HOME/.aws/emulator/9297/config
-AWS_CA_BUNDLE=$HOME/.aws/emulator/9297/ca.pem    # the emulator uses a self-signed CA
-NODE_EXTRA_CA_CERTS=$HOME/.aws/emulator/9297/ca.pem
-AWS_EC2_METADATA_DISABLED=true
-AWS_DISABLE_HOST_PREFIX_INJECTION=true
-AWS_REGION=us-east-1
-AWS_DEFAULT_REGION=us-east-1
-TF_VAR_emulator_dir=$HOME/.aws/emulator/9297
-```
+- **Drift right after apply.** The idempotency check failed on the first run:
+  the emulator reports `on_demand_throughput = -1` for an on-demand DynamoDB
+  table and the provider plans to remove it every time. I ignored only that
+  block (`lifecycle.ignore_changes`) so the check stays strict for everything
+  else.
+- **A 500 on valid JSON.** A body of `null` is valid JSON, and the handler
+  crashed reading `url` from it. It now returns `400` for any body that is not
+  a JSON object.
+- **301 vs 302.** The redirect started as a `301`, but browsers cache a `301`
+  permanently and stop calling the API, so visits stop being counted. It is a
+  `302` now.
+- **IAM assumptions.** The first policy allowed `GetItem`, which the code never
+  uses, gave log permissions on `*`, and had no X-Ray permissions although
+  tracing was enabled. I also assumed the emulator ignores IAM. Testing showed
+  the opposite: the function runs with its execution role, and removing
+  `PutItem` or `UpdateItem` from the policy makes the end-to-end tests fail.
+- **Variables that were not needed.** Terraform passes the emulator endpoint,
+  credentials and CA to the function. With emulator 1.0.385, the end-to-end
+  tests also pass without them; the block is still in the code.
+- **Two emulators on one port.** Running `make emulator` twice started a second
+  instance that overwrote the first one's log. The script now reuses a running
+  emulator.
 
-Two emulator-specific details:
+What the emulator does not validate:
 
-1. **API Gateway routing uses the `Host` header.** All APIs share one endpoint;
-   the tests send `Host: <api_id>.execute-api.us-east-1.amazonaws.com` and put
-   the stage name first in the path.
-2. **Emulator variables for the function.** When `emulator_dir` is set,
-   Terraform also passes the endpoint, credentials and CA to the function.
-   With AWS Emulator 1.0.385 this turned out to be unnecessary: the function
-   runs with its execution role and reaches DynamoDB without these variables
-   (the end-to-end tests pass either way). The block is still in the code.
+- **Logs and X-Ray permissions.** The emulator does not deliver the function's
+  logs to CloudWatch Logs, and records X-Ray traces without checking the role,
+  so those parts of the IAM policy are untested.
+- **Throttling.** The emulator stores API Gateway throttling settings but does
+  not apply them (30 parallel requests with a limit of 1 per second all reached
+  the function). I left throttling out of Terraform until it can be tested, but
+  the API is public and should have it before any real deployment.
+- **AWS itself.** A green run shows that the code works against the emulator,
+  not that it works on AWS. IAM evaluation, service limits and behaviour
+  differences can only be confirmed with a real deployment.
 
-## Engineering decisions
+Other limits: Terraform state is local, which is fine for an environment that
+lives for one CI run, and some Checkov findings (no WAF, no customer-managed
+KMS keys, no access logs) are accepted for a demo, not for production.
 
-Explained in [`docs/decisions.md`](docs/decisions.md), in short:
+More detail on these choices is in [`docs/decisions.md`](docs/decisions.md).
 
-- **302 instead of 301:** browsers cache a 301 permanently and stop calling the
-  API, so visits would not be counted.
-- **Least-privilege IAM:** only the two DynamoDB actions the handler uses, logs
-  scoped to the function's log group, and the X-Ray permissions that active
-  tracing requires.
-- **No throttling in Terraform yet:** the emulator ignores throttling settings,
-  so they could not be tested.
-- **Pinned versions:** Terraform 1.17.2, a committed provider lock file,
-  actions pinned by commit SHA, Dependabot for updates.
+## Possible improvements
 
-## Limitations
-
-- **Not deployed to a real AWS account.** The code is written to work there,
-  but that is untested.
-- **IAM is only partly validated.** The DynamoDB permissions are enforced by the
-  emulator and covered by the end-to-end tests. The logs and X-Ray permissions
-  are not checked, and AWS's own policy evaluation is untested.
-- **No API throttling.** The API is public and unauthenticated; only the
-  account-level default limit would apply on AWS.
-- **The dev container has not been tested.**
-- **Local Terraform state**, which suits an environment that lives for one CI
-  run. A shared environment would need a remote backend.
-- **Accepted Checkov findings** (no WAF, no customer-managed KMS keys, no access
-  logs, among others) are listed with their reasons in
-  [`.checkov.yaml`](.checkov.yaml); several would need revisiting before any
-  real use.
-
-## Next steps
-
-- Deploy job to a real AWS account using GitHub OIDC, then check IAM, logs and
-  traces there
-- Stage throttling, tested with a burst of requests on AWS
-- Remove the emulator-only environment variables for the function, now that
-  they are not needed
-- Remote state in S3, WAF and access logging for a long-lived environment
-
-## Project layout
-
-```
-app/                       Lambda handler (Node.js 22, AWS SDK v3) + unit tests
-infra/                     Terraform: DynamoDB, IAM, Lambda, API Gateway
-tests/integration/         pytest end-to-end tests, read Terraform outputs
-scripts/start-emulator.sh  Install, start and health-check AWS Emulator
-.github/workflows/ci.yml   The pipeline
-.github/dependabot.yml     Weekly dependency updates
-docs/                      Engineering decisions and emulator findings
-.devcontainer/             Dev container for GitHub Codespaces (untested)
-```
+- Deploy to a real AWS account from CI with GitHub OIDC, and check IAM, logs
+  and traces there.
+- Add stage throttling and test it on AWS with a burst of requests.
+- Remove the emulator-only environment variables passed to the function.
+- Use a remote Terraform backend (S3 with locking) for a long-lived environment.
