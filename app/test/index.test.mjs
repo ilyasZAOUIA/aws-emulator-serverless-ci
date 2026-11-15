@@ -65,6 +65,17 @@ test("POST /links rejects malformed JSON with 400", async () => {
   assert.equal(res.statusCode, 400);
 });
 
+test("POST /links rejects JSON bodies that are not objects with 400", async () => {
+  const client = fakeClient(() => ({}));
+  const handler = createHandler({ client, tableName: "t" });
+  for (const body of ["null", '"https://example.com"', "42", '["https://example.com"]']) {
+    const res = await handler({ httpMethod: "POST", body });
+    assert.equal(res.statusCode, 400, `body ${body}`);
+    assert.equal(JSON.parse(res.body).error, "body must be a JSON object");
+  }
+  assert.equal(client.calls.length, 0);
+});
+
 test("POST /links decodes base64 bodies", async () => {
   const handler = createHandler({ client: fakeClient(() => ({})), tableName: "t" });
   const res = await handler({

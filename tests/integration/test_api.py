@@ -36,6 +36,12 @@ def test_invalid_url_is_rejected(api):
     assert res.status_code == 400
 
 
+def test_non_object_json_body_is_rejected(api):
+    res = api.request("POST", "/links", data="null")
+    assert res.status_code == 400, res.text
+    assert res.json()["error"] == "body must be a JSON object"
+
+
 def test_unknown_code_returns_404(api):
     res = api.request("GET", "/links/doesnotexist")
     assert res.status_code == 404

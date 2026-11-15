@@ -51,6 +51,10 @@ export function createHandler({ client, tableName }) {
     } catch {
       return response(400, { error: "body must be valid JSON" });
     }
+    // JSON.parse also accepts null, strings, numbers and arrays.
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return response(400, { error: "body must be a JSON object" });
+    }
     if (!isValidUrl(payload.url)) {
       return response(400, { error: "field 'url' must be an http(s) URL" });
     }
