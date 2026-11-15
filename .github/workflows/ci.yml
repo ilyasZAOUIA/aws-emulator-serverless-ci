@@ -35,11 +35,27 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      - name: JavaScript syntax check
+        working-directory: app
+        run: npm run lint
+
       - name: Unit tests (Lambda)
         working-directory: app
         run: |
           npm ci
           npm test
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements-dev.txt
+
+      - name: Ruff (Python tests)
+        run: |
+          pip install -q -r tests/requirements-dev.txt
+          ruff check tests
+          ruff format --check tests
 
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:

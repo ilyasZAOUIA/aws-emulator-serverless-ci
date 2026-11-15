@@ -4,6 +4,7 @@ AWS Emulator serves every API Gateway API on one endpoint. The target API is
 picked by the Host header (<api_id>.execute-api.<region>.amazonaws.com) and
 the stage name goes first in the path.
 """
+
 import json
 import os
 import subprocess
@@ -33,7 +34,8 @@ class ApiClient:
         self.stage = outputs["stage_name"]
         region = os.environ.get("AWS_REGION", "us-east-1")
         self.host = f"{outputs['api_id']}.execute-api.{region}.amazonaws.com"
-        self.verify = os.environ.get("AWS_CA_BUNDLE", True)
+        # Path to the emulator CA bundle, or True for the default CA store.
+        self.verify = os.environ.get("AWS_CA_BUNDLE") or True
 
     def request(self, method, path, **kwargs):
         return requests.request(

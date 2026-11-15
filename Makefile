@@ -1,18 +1,25 @@
 # Local workflow (GitHub Codespaces or any Ubuntu/Debian machine).
 #   make emulator   # install + start AWS Emulator
 #   make deploy     # terraform apply against the emulator
+#   make lint       # JavaScript syntax + Ruff on the Python tests
 #   make test       # unit + end-to-end tests
 #   make destroy
 SHELL := /bin/bash
 ENV := set -a; source .emulator.env; set +a;
 
-.PHONY: emulator deploy unit e2e test destroy clean
+.PHONY: emulator deploy lint unit e2e test destroy clean
 
 emulator:
 	bash scripts/start-emulator.sh
 
 deploy:
 	$(ENV) terraform -chdir=infra init -input=false && terraform -chdir=infra apply -auto-approve
+
+lint:
+	cd app && npm run lint
+	pip install -q -r tests/requirements-dev.txt
+	ruff check tests
+	ruff format --check tests
 
 unit:
 	cd app && npm ci && npm test
