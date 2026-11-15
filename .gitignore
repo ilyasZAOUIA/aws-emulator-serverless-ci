@@ -9,3 +9,5 @@ infra/build/
 __pycache__/
 .pytest_cache/
 docs/screenshots/*.tmp
+# Screenshots taken during local test runs; kept on the machine, never committed
+local-captures/
