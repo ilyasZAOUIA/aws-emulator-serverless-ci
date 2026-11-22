@@ -1,2 +1,2 @@
 # Lint tools, kept apart from the end-to-end test dependencies.
-ruff==0.17.5
+ruff==0.17.6
